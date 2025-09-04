@@ -1,0 +1,2 @@
+test_num,average_position_error,position_error_std,max_position_error,average_orientation_error,orientation_error_std,max_orientation_error,total_path_length
+0,0.0009300586243418584,0.00012125169171650125,0.0011697408688423382,0.0069181255242991855,0.0038331171489553854,0.023413780548283355,2.975030251362391
