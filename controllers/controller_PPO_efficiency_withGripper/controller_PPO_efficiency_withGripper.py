@@ -128,10 +128,12 @@ callback = CallbackList([
 # model_path = "models/20250623-230114_select_startpoint_byPathLength_noDone_100000_steps"  # <-- 替換成你自己的模型路徑
 # model = PPO.load(model_path, env=world, device="cuda")  # 如果有用 GPU 的話
 # print("Policy on device:", model.policy.device)
-# model.learn(total_timesteps= steps*episodes,  callback=callback)   
+model.learn(total_timesteps= steps*episodes,  callback=callback)   
 
 ################################################################################################################################
-
+'''
+訓練結束後，以下列程式碼進行測試
+'''
 # # 載入之前訓練好的模型
 
 env = DummyVecEnv([lambda: world])          # SB3 需要 VecEnv 格式

@@ -17,6 +17,7 @@ import pandas as pd
 import random
 import psutil
 import os
+import csv
 
 #-----------------------------------------------------------------------------
 #成功率追蹤器
@@ -307,6 +308,7 @@ def fix_webots_frame_error(Rotation_matrix):
     # 計算新的旋轉矩陣 R' = R @ Rx_A
     R_prime = Rotation_matrix @ Rx_A
     return R_prime
+
 def get_IK_angle(target_position, target_orientation,initial_position, orientation_axis="all"):
     """
     计算逆向运动学角度
@@ -366,6 +368,7 @@ def directly_go_to_target(quaternion,p_w_new,robot_initial_pos):
     q_w_new = np.array(quaternion)
     #輸入工件與末端執行器初始位置(四位元數表示旋轉)，根據工件目標位置計算末端執行器的目標位置
     p_w = np.array([0.816996, 0.428782, 0.0628227])
+    p_w = np.array([0.816996, 0.448782, 0.0628227])#實際機台的工件位置 
     q_w = np.array([ 0.0, -1,  0.0,  1.21326795e-04])  # 單位四元數
     p_e = np.array([0.816992, 0.233936, 0.0628227])
     q_e = np.array([ 0.0, -1,  0.0,  1.21326795e-04])
@@ -390,6 +393,7 @@ class World(Env):
 
         self.supervisor = Supervisor()
         self.timestep = int(self.supervisor.getBasicTimeStep())
+        print("self.timestep =",self.timestep)
 
         self.max_steps = 250
         self.current_step = 0
@@ -478,7 +482,9 @@ class World(Env):
         #砂帶接觸點(世界坐標系底下)的旋轉與平移
         R_contactpoint_frame = Rotation_matrix(-90,-90,0)#角度單為為度,此處為砂帶上接觸點的座標的旋轉,輸入歐拉角rx,ry,rz轉換成旋轉矩陣
         t_contactpoint_frame = np.array([0.0100017, 0.5567, 0.41])#此處為砂帶上接觸點的座標，可由"座標轉換.ipynb"計算其歐拉角(軸-角--->歐拉)
-
+        t_contactpoint_frame = np.array([0.100017, 0.5607, 0.41])#實際砂帶機台接觸點位置 
+        t_contactpoint_frame = np.array([0.100017, 0.5607, 0.42])
+        t_contactpoint_frame = np.array([0.100017, 0.5608, 0.44])# world = robot_arm_withGripper_3
         '''
         讀取路徑採樣點資訊後，採樣點位置為相對於工件坐標系之坐標系，將採樣點的坐標系(在工件坐標系底下)的旋轉與平移，以及砂帶接觸點(世界坐標系底下)的旋轉與平移作為輸入，
         輸出工件坐標系在世界坐標系底下的平移(t_A_prime)與旋轉(R_A_prime)
@@ -757,6 +763,7 @@ class World(Env):
 
         while self.supervisor.step(self.timestep) != -1:
             self.grinder_translation_field.setSFVec3f([0.3,0.95,1.03529e-08])#手臂移動到初始位置後再將砂帶機台拿回來
+            self.grinder_translation_field.setSFVec3f([-0.2,0.565,0.04])# world = robot_arm_withGripper_3
             break
 
         # reset parameters 
@@ -773,6 +780,11 @@ class World(Env):
 
         self.quaternion_history = deque(maxlen=11)  # 記錄過去 11 步的 工件四位元數
 
+        self.position_errors=[]
+        self.orientation_errors=[]
+        self.joint_poses = [] #紀錄移動過程中，手臂個軸的角度位置 
+        self.velocity_log = []
+        self.previous_velocity = np.zeros(len(self.motors)) 
 
         
         info = {}
@@ -806,9 +818,22 @@ class World(Env):
             #     # joint_name = f"shoulder_lift_joint{i+1}"
             #     self.motors[i].setPosition(0)#這裡應該要修改成目前的起始位置(比如第n條路徑的最後一個採樣點)
             for n, motor in enumerate(self.motors):
-                motor.setPosition(joints_angle[n])    
+                motor.setPosition(joints_angle[n])   
+            self.record_robot_posture() #將手臂的角度位置記錄下來
             current_angles=self.get_motor_angles() 
             delta = np.linalg.norm(np.array(joints_angle) - np.array(current_angles))
+            #紀錄轉速----------------------------------------------------
+            delta_angles = current_angles - joints_angle
+            velocity = delta_angles / (self.timestep / 1000.0)
+            # # print(velocity)
+            # # 取得目前模擬時間（秒）
+            current_time = self.supervisor.getTime()
+            self.velocity_log.append([current_time] + velocity.tolist())
+
+            
+            # acceleration = (velocity - self.previous_velocity) / (self.timestep / 1000.0)
+            self.previous_velocity = velocity
+            #------------------------------------------------------------
             t=t+1
             if t>=100:
                 break
@@ -893,13 +918,15 @@ class World(Env):
         #     r5 = 0
 
         #------------------------------------------------------------------------------
-        if (position_error_prime<0.01 and orientation_error_prime<10) :
+        if (position_error_prime<0.025 and orientation_error_prime<10) :
             r6 = 1
             get_to_target=True
         else:
             r6=0
             get_to_target=False
-        if next_state[6]==1 or next_state[6]==0.1:
+        # if next_state[6]==1 or next_state[6]==0.1:
+        #     crash = True
+        if next_state[6]==1 :
             crash = True
         else:
             crash = False
@@ -939,6 +966,34 @@ class World(Env):
         process = psutil.Process(os.getpid())
         mem_MB = process.memory_info().rss / 1024 / 1024
         return mem_MB
+    
+    #--------------------------------------------------------------------------------
+    def record_robot_posture(self):
+        """
+        將手臂姿態儲存下來
+        ex:pose = [1.0, -0.5, 0.3, 0.0, 1.57, 0.0]
+        """
+        pose=self.get_motor_angles()
+        self.joint_poses.append(pose)
+
+    def save_robot_posture_as_csv(self,file_path):
+        """
+        將完整的路徑記錄下來後,儲存成csv檔
+        """
+        with open(file_path, mode="w", newline="") as file:
+            writer = csv.writer(file)
+            writer.writerow(["Joint1", "Joint2", "Joint3", "Joint4", "Joint5", "Joint6"])  # 標題
+            writer.writerows(self.joint_poses)
+
+    def save_joint_velocity_as_csv(self,file_path):
+        n_joints = len(self.velocity_log[0]) - 1  # 去掉時間欄位
+        header = ['time'] + [f'velocity_{i}' for i in range(n_joints)]
+
+        with open(file_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(header)
+            writer.writerows(self.velocity_log)
+    #--------------------------------------------------------------------------------
 
     def step(self, action):
         # print(f"-----------------timestep  {self.current_step}--------------------------------------------------------------------")
@@ -962,6 +1017,11 @@ class World(Env):
         '''
         這部分是使用馬達[位置]控制機器手臂
         '''
+        # for motor in self.motors:
+        #     motor.enableTorqueFeedback(self.timestep)#扭矩回饋
+
+
+
         joint_angles=self.get_motor_angles()#讀取各軸馬達目前角度位置
         target_joint_angles=(joint_angles+action*2*np.pi/360)#將當前各馬達位置加上角度變化量，表示馬達將要移動到的位置(以弧度表示)
 
@@ -972,10 +1032,29 @@ class World(Env):
             for i, motor in enumerate(self.motors):
                 motor.setPosition(target_joint_angles[i])#執行各馬達動作
 
+            #記錄各軸轉速------------------------
+            current_joint_angles = self.get_motor_angles()
+            delta_angles = current_joint_angles - joint_angles
+            velocity = delta_angles / (self.timestep / 1000.0)
+            # torques = [motor.getTorqueFeedback() for motor in self.motors]
+            # # print("Velocities (rad/s):", velocity)
+            # # print("Torques (Nm):", torques)
+            # # 取得目前模擬時間（秒）
+            current_time = self.supervisor.getTime()
+            
+            self.velocity_log.append([current_time] + velocity.tolist())
+
+            # acceleration = (velocity - self.previous_velocity) / (self.timestep / 1000.0)
+            # # print("a = ",acceleration)
+            self.previous_velocity = velocity
+            #------------------------------------
+
             t=t+1
             if t>10:
                 break#計數器 t 及 if t > 4: break 的設計主要是為了避免無窮迴圈(如果馬達無法到達目標角度（例如因為碰撞、馬達受限或模擬異常)使程式卡住），確保程式能夠適當地退出 while 迴圈)
             joint_angles=self.get_motor_angles()
+
+        self.record_robot_posture() #將手臂的角度位置記錄下來
         #--------------------------------------------------------------------------------------------------------------------
         '''
         這部分是使用馬達[轉速]控制機器手臂
@@ -996,7 +1075,7 @@ class World(Env):
  
         reward,get_to_target,crash,rewards,errors=self.calculate_reward(current_state,next_state)#根據next_state決定獎勵,達到目標前done都等於0
         if get_to_target:
-            self.done = True
+            # self.done = True
             self.already_chosen_points.append(self.samplepoint_num)
             self.current_step=0#達到目標位姿，重置步數
             self.get_to_target_times=self.get_to_target_times+1#紀錄單一episode內成功達到目標點位的次數
@@ -1011,6 +1090,7 @@ class World(Env):
             workpiece_target_quaternion=next_state[10:14]
             workpiece_target_position=next_state[7:10]
             self.move_to_target_with_ikpy(workpiece_target_quaternion,workpiece_target_position,robot_initial_pos)
+            self.log_position_orientation_error()
 
             #如果下個採樣點和目前的採樣點在同一條路徑上，直接利用ikpy移動工件
             while self.check_if_its_in_the_same_path(self.samplepoint_num,self.samplepoint_num+1):
@@ -1029,6 +1109,7 @@ class World(Env):
                     crash=True
                     break
                 self.move_to_target_with_ikpy(workpiece_target_quaternion,workpiece_target_position,robot_initial_pos)
+                self.log_position_orientation_error()
             
             #隨機選擇下一個目標點位
             # self.samplepoint_num=self.random_choose_a_target_point(self.already_chosen_points)#隨機選擇一個目標點位作為下一個目標(排除已經達成的點位)
@@ -1076,7 +1157,8 @@ class World(Env):
         info = {
             "timestep reward": reward,
             "timestep rewards": rewards,
-            "get to targat":get_to_target
+            "get to targat":get_to_target,
+            "crash":crash
             
         }
         #---------------------------------
@@ -1114,11 +1196,21 @@ class World(Env):
         return next_state, reward, self.done, truncated, info
     
 #---------------------------------------------------------------------------------------
-    def select_samplepoint_num(self, samplepoint_num):
+    def select_samplepoint_num(self, samplepoint_num):#決定下一個採樣點
         self.samplepoint_num = samplepoint_num
+#---------------------------------------------------------------------------------------
+    def log_position_orientation_error(self):
+        current_state = self.get_state()
+        position_error=((current_state[7]-current_state[14])**2+(current_state[8]-current_state[15])**2+(current_state[9]-current_state[16])**2)**0.5
+        q1_current=np.array([current_state[10],current_state[11],current_state[12],current_state[13]])
+        q2_current=np.array([current_state[17],current_state[18],current_state[19],current_state[20]])
+        orientation_error=quaternion_angle(q1_current,q2_current)
+        self.position_errors.append(position_error)
+        self.orientation_errors.append(orientation_error)
     
 #-------------------------------------------------------------------------------------主循環
 # supervisor.step(int(supervisor.getBasicTimeStep()))
+
 
 
 

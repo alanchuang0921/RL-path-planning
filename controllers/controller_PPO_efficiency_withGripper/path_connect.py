@@ -51,8 +51,10 @@ timestep = int(world.timestep)# 設定時鐘（time step）
 # # 載入之前訓練好的模型
 env = DummyVecEnv([lambda: world])          # SB3 需要 VecEnv 格式
 
-# # 載入已訓練的 PPO 模型
+# 載入已訓練的 PPO 模型
 model_path = "lowlevel_models/20250614-203811_4faceS_wp7cm_crash_keeptrain_successrate_1433600_steps"  # <-- 替換成你自己的模型路徑
+model_path = "lowlevel_models/20250718-213112_4faceS_wp7cm_changWithSuccessRate_noCrashDone_a1_20_3900000_steps"
+model_path = "lowlevel_models/20250718-213112_4faceS_wp7cm_changWithSuccessRate_noCrashDone_a1_20_3900000_steps"
 # model = PPO.load(model_path, env=env, device="cuda")  # 如果有用 GPU 的話
 
 
